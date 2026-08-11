@@ -67,17 +67,28 @@ TOOLS = [{
 
 # ── Tool execution ────────────────────────────────────────
 def run_bash(command: str) -> str:
+    """执行一条 shell 命令，把输出（stdout + stderr）返回给模型。"""
+    # 危险命令黑名单：命令里只要出现这些片段之一就拒绝执行
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
     try:
+        # shell=True: 交给系统 shell 执行，支持管道、重定向、通配符
+        # cwd=os.getcwd(): 在当前目录下运行
+        # capture_output=True: 捕获 stdout/stderr 而不是打到终端
+        # text=True: 以字符串形式返回（而不是 bytes）
+        # timeout=120: 120 秒超时，防止命令卡死整个 agent 循环
         r = subprocess.run(command, shell=True, cwd=os.getcwd(),
                            capture_output=True, text=True, timeout=120)
+        # stdout 和 stderr 拼在一起返回，模型才能看到报错信息
         out = (r.stdout + r.stderr).strip()
+        # 输出太长会撑爆上下文，截断到 50000 字符；完全没输出时给个占位文本
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
+        # 超时：模型会在下一轮看到这条错误，通常会换个更稳妥的命令
         return "Error: Timeout (120s)"
     except (FileNotFoundError, OSError) as e:
+        # 命令不存在等系统级错误，把异常信息当作工具结果返回
         return f"Error: {e}"
 
 
@@ -121,7 +132,7 @@ if __name__ == "__main__":
     history = []
     while True:
         try:
-            query = input("\033[36ms01 >> \033[0m")
+            query = input("\033[36ms01 >>List all Python files in this directory \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
