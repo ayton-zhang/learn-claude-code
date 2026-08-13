@@ -149,12 +149,26 @@ def check_deny_list(command: str) -> str | None:
 
 
 # Gate 2: Rule matching — context-dependent checks
+# 规则闸门的核心是一个“配置表”：每个字典描述一类需要额外确认的工具调用。
+# 后面的 check_rules() 会遍历这张表，根据当前 block.name 找到适用规则，
+# 再把 block.input 传给 check 函数；因此新增规则通常只需要增加一个字典，不必改判断主流程。
 PERMISSION_RULES = [
+    # 文件工具规则：检查参数里的 path 解析后是否仍然位于 WORKDIR 内。
+    # `tools` 是适用工具名列表；这里把三个文件工具放在一起复用同一种路径检查逻辑。
     {"tools": ["read_file", "write_file", "edit_file"],
+     # `lambda args: ...` 创建一个匿名函数，参数 args 就是模型返回的 block.input 字典。
+     # `args.get("path", "")` 读取 path；如果参数缺失，就用空字符串作为安全的默认值。
+     # `(WORKDIR / path).resolve()` 会规范化 `.`、`..` 和符号链接，得到要访问的真实路径。
+     # `is_relative_to(WORKDIR)` 为 True 表示路径仍在工作区内；取 `not` 后，越出工作区才会命中规则。
      "check": lambda args: not (WORKDIR / args.get("path", "")).resolve().is_relative_to(WORKDIR),
+     # 规则命中后传给 ask_user() 的原因文字；它向用户说明为什么需要确认。
      "message": "Writing outside workspace"},
+    # Bash 规则：只要命令文本包含删除、重定向到系统目录或放宽权限的关键词，就需要用户确认。
     {"tools": ["bash"],
+     # `any(...)` 只要发现一个关键词出现在 command 中就返回 True。
+     # 这里的 args 仍然是 block.input，只是 bash 工具的参数名变成了 command。
      "check": lambda args: any(kw in args.get("command", "") for kw in ["rm ", "> /etc/", "chmod 777"]),
+     # 命中后展示给用户的风险说明。
      "message": "Potentially destructive command"},
 ]
 
@@ -231,7 +245,8 @@ if __name__ == "__main__":
     history = []
     while True:
         try:
-            query = input("\033[36ms03 >> \033[0m")
+            default_query = "Read both README.md and requirements.txt, then create a summary file"
+            query = input(f"\033[36ms03 >> {default_query} \033[0m") or default_query
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
