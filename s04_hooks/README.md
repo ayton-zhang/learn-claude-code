@@ -43,12 +43,12 @@ s03 的循环和权限逻辑完全保留。唯一的变动是把 `check_permissi
 
 四个事件，覆盖一个完整的 agent cycle：
 
-| 事件 | 触发时机 | 典型用途 |
-|------|---------|---------|
-| UserPromptSubmit | 用户输入提交后、进入 LLM 前 | 输入验证、注入上下文 |
-| PreToolUse | 工具执行前 | 权限检查、日志记录 |
-| PostToolUse | 工具执行后 | 副作用（自动 git add 等）、输出检查 |
-| Stop | 循环即将退出时 | 收尾清理（CC 还支持强制续跑） |
+| 事件             | 触发时机                    | 典型用途                            |
+| ---------------- | --------------------------- | ----------------------------------- |
+| UserPromptSubmit | 用户输入提交后、进入 LLM 前 | 输入验证、注入上下文                |
+| PreToolUse       | 工具执行前                  | 权限检查、日志记录                  |
+| PostToolUse      | 工具执行后                  | 副作用（自动 git add 等）、输出检查 |
+| Stop             | 循环即将退出时              | 收尾清理（CC 还支持强制续跑）       |
 
 扩展通过 `register_hook()` 添加，循环只调用 `trigger_hooks()`。
 
@@ -186,14 +186,14 @@ for block in response.content:
 
 ## 相对 s03 的变更
 
-| 组件 | 之前 (s03) | 之后 (s04) |
-|------|-----------|-----------|
-| 扩展方式 | check_permission() 硬编码在循环里 | HOOKS 注册表 + trigger_hooks() |
-| 新函数 | — | register_hook, trigger_hooks |
-| hook 回调 | — | context_inject_hook, permission_hook, log_hook, large_output_hook, summary_hook |
-| 循环 | 直接调用 check_permission() | 调用 trigger_hooks("PreToolUse", ...) |
-| 退出控制 | 无 | trigger_hooks("Stop", ...) 可阻止退出 |
-| 输入拦截 | 无 | trigger_hooks("UserPromptSubmit", ...) 可注入上下文 |
+| 组件      | 之前 (s03)                        | 之后 (s04)                                                                      |
+| --------- | --------------------------------- | ------------------------------------------------------------------------------- |
+| 扩展方式  | check_permission() 硬编码在循环里 | HOOKS 注册表 + trigger_hooks()                                                  |
+| 新函数    | —                                | register_hook, trigger_hooks                                                    |
+| hook 回调 | —                                | context_inject_hook, permission_hook, log_hook, large_output_hook, summary_hook |
+| 循环      | 直接调用 check_permission()       | 调用 trigger_hooks("PreToolUse", ...)                                           |
+| 退出控制  | 无                                | trigger_hooks("Stop", ...) 可阻止退出                                           |
+| 输入拦截  | 无                                | trigger_hooks("UserPromptSubmit", ...) 可注入上下文                             |
 
 ---
 
@@ -229,15 +229,15 @@ s05 TodoWrite → 给 Agent 一个计划工具。先列清单，再做。
 
 教学版只讲了 PreToolUse 和 PostToolUse。CC 实际有 27 个 hook 事件（`coreTypes.ts:25-53`）：
 
-| 类别 | 事件 |
-|------|------|
-| 工具相关 | `PreToolUse`, `PostToolUse`, `PostToolUseFailure` |
-| 会话相关 | `SessionStart`, `SessionEnd`, `Stop`, `StopFailure`, `Setup` |
-| 用户交互 | `UserPromptSubmit`, `Notification`, `PermissionRequest`, `PermissionDenied` |
-| 子 Agent | `SubagentStart`, `SubagentStop` |
-| 压缩相关 | `PreCompact`, `PostCompact` |
-| 团队相关 | `TeammateIdle`, `TaskCreated`, `TaskCompleted` |
-| 其他 | `Elicitation`, `ElicitationResult`, `ConfigChange`, `WorktreeCreate`, `WorktreeRemove`, `InstructionsLoaded`, `CwdChanged`, `FileChanged` |
+| 类别     | 事件                                                                                                                                                      |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 工具相关 | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`                                                                                                   |
+| 会话相关 | `SessionStart`, `SessionEnd`, `Stop`, `StopFailure`, `Setup`                                                                                    |
+| 用户交互 | `UserPromptSubmit`, `Notification`, `PermissionRequest`, `PermissionDenied`                                                                       |
+| 子 Agent | `SubagentStart`, `SubagentStop`                                                                                                                       |
+| 压缩相关 | `PreCompact`, `PostCompact`                                                                                                                           |
+| 团队相关 | `TeammateIdle`, `TaskCreated`, `TaskCompleted`                                                                                                      |
+| 其他     | `Elicitation`, `ElicitationResult`, `ConfigChange`, `WorktreeCreate`, `WorktreeRemove`, `InstructionsLoaded`, `CwdChanged`, `FileChanged` |
 
 教学版只讲 4 个核心事件（UserPromptSubmit、PreToolUse、PostToolUse、Stop），因为它们覆盖了一个完整 agent cycle 的关键节点。其他 23 个都是同样的模式。
 
@@ -245,17 +245,17 @@ s05 TodoWrite → 给 Agent 一个计划工具。先列清单，再做。
 
 CC 的 `HookResult`（`types/hooks.ts:260-275`）有 14 个字段，以下是常用字段：
 
-| 字段 | 类型 | 用途 |
-|------|------|------|
-| `message` | Message | 可选 UI 消息 |
-| `blockingError` | HookBlockingError | 阻塞错误 → 注入对话让模型自纠 |
-| `outcome` | success/blocking/non_blocking_error/cancelled | 执行结果 |
-| `preventContinuation` | boolean | 阻止后续执行 |
-| `stopReason` | string | 停止原因描述 |
-| `permissionBehavior` | allow/deny/ask/passthrough | hook 返回权限决策 |
-| `updatedInput` | Record | 修改工具输入 |
-| `additionalContext` | string | 附加上下文 |
-| `updatedMCPToolOutput` | unknown | MCP 工具输出修改 |
+| 字段                     | 类型                                          | 用途                           |
+| ------------------------ | --------------------------------------------- | ------------------------------ |
+| `message`              | Message                                       | 可选 UI 消息                   |
+| `blockingError`        | HookBlockingError                             | 阻塞错误 → 注入对话让模型自纠 |
+| `outcome`              | success/blocking/non_blocking_error/cancelled | 执行结果                       |
+| `preventContinuation`  | boolean                                       | 阻止后续执行                   |
+| `stopReason`           | string                                        | 停止原因描述                   |
+| `permissionBehavior`   | allow/deny/ask/passthrough                    | hook 返回权限决策              |
+| `updatedInput`         | Record                                        | 修改工具输入                   |
+| `additionalContext`    | string                                        | 附加上下文                     |
+| `updatedMCPToolOutput` | unknown                                       | MCP 工具输出修改               |
 
 ### 三、关键不变式：Hook 'allow' 不能绕过 deny/ask 规则
 

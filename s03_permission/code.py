@@ -245,7 +245,7 @@ if __name__ == "__main__":
     history = []
     while True:
         try:
-            default_query = "Read both README.md and requirements.txt, then create a summary file"
+            default_query = "Delete the file test.txt"
             query = input(f"\033[36ms03 >> {default_query} \033[0m") or default_query
         except (EOFError, KeyboardInterrupt):
             break
