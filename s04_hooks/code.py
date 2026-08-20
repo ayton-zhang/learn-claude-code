@@ -314,7 +314,7 @@ if __name__ == "__main__":
     history = []
     while True:
         try:
-            default_query = "Read the file README.md"
+            default_query = "Create a file called test.txt"
             query = input(f"\033[36ms04 >> {default_query} \033[0m") or default_query
         except (EOFError, KeyboardInterrupt):
             break
