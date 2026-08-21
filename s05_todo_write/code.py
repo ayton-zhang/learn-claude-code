@@ -288,7 +288,8 @@ if __name__ == "__main__":
     history = []
     while True:
         try:
-            query = input("\033[36ms05 >> \033[0m")
+            default_query = "Refactor s05_todo_write/example/hello.py: add type hints, docstrings, and a main guard"
+            query = input(f"\033[36ms05 >> {default_query} \033[0m") or default_query
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
