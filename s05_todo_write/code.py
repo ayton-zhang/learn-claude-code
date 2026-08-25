@@ -121,37 +121,61 @@ def run_glob(pattern: str) -> str:
 #  NEW in s05: todo_write tool — plan only, no execution
 # ═══════════════════════════════════════════════════════════
 
+# 这个辅助函数负责把模型传来的各种形式统一成“任务字典列表”，并提前检查数据是否合法。
+# 成功时返回 `(任务列表, None)`；失败时返回 `(None, 错误信息)`，调用者可以统一处理结果。
 def _normalize_todos(todos):
+    # 模型通常会传入 Python list，但某些兼容层可能把数组编码成字符串，因此这里兼容两种入口。
     if isinstance(todos, str):
         try:
+            # `json.loads` 把 JSON 字符串解析成 Python 对象；例如 `'[{"content": "..."}]'` 会变成 list。
             todos = json.loads(todos)
         except json.JSONDecodeError:
             try:
+                # 兼容 Python 字面量形式的字符串，例如 `"[{'content': '...', 'status': 'pending'}]"`。
+                # `literal_eval` 只解析字符串、列表、字典等字面量，比直接使用 eval 更安全。
                 todos = ast.literal_eval(todos)
             except (SyntaxError, ValueError):
+                # 两种解析方式都失败，返回错误元组；这里不抛异常，避免工具调用直接中断 Agent 循环。
                 return None, "Error: todos must be a list or JSON array string"
+    # 无论输入原本是什么类型，规范化后都必须是 list，后面才能逐项检查任务。
     if not isinstance(todos, list):
         return None, "Error: todos must be a list"
+    # `enumerate` 同时提供任务下标 i 和任务对象 t；下标会被放进错误信息，方便定位哪一项有问题。
     for i, t in enumerate(todos):
+        # 每个任务必须是 dict，因为后面要通过 t["content"] 和 t["status"] 读取字段。
         if not isinstance(t, dict):
             return None, f"Error: todos[{i}] must be an object"
+        # `content` 是任务文字，`status` 是任务状态；两者缺一不可。
         if "content" not in t or "status" not in t:
             return None, f"Error: todos[{i}] missing 'content' or 'status'"
+        # 只接受这三个状态，保证后面的图标字典一定能找到对应的显示符号。
         if t["status"] not in ("pending", "in_progress", "completed"):
             return None, f"Error: todos[{i}] has invalid status '{t['status']}'"
+    # 返回原任务列表和 None；None 在这里表示“没有错误”，与上面的错误字符串形成统一返回格式。
     return todos, None
 
 def run_todo_write(todos: list) -> str:
+    # `CURRENT_TODOS` 是本次会话的内存状态；函数内部要重新赋值它，所以必须声明为 global。
     global CURRENT_TODOS
+    # 这里是元组解包：把规范化函数返回的 `(任务列表, 错误信息)` 分别放进两个变量。
     todos, error = _normalize_todos(todos)
+    # 空字符串、None 等值会被视为“没有错误”；真正的错误信息是非空字符串，因此可以直接判断。
     if error:
         return error
+    # 校验通过后更新全局任务列表，后续 Agent 轮次或 Stop hook 都可以读取最新状态。
     CURRENT_TODOS = todos
+    # 先创建输出行列表；开头的换行和 ANSI 转义序列只负责终端显示效果，不影响任务数据本身。
     lines = ["\n\033[33m## Current Tasks\033[0m"]
+    # 按任务原始顺序生成一行一项的终端展示内容。
     for t in CURRENT_TODOS:
+        # 根据状态选择图标和颜色：pending 用空白，进行中用蓝色箭头，完成用绿色对勾。
+        # 这里的 status 已在 _normalize_todos 中校验过，所以字典查找不会遇到未知键。
         icon = {"pending": " ", "in_progress": "\033[36m▸\033[0m", "completed": "\033[32m✓\033[0m"}[t["status"]]
+        # f-string 把任务状态对应的 icon 和任务文字 content 拼成一行可读的清单。
         lines.append(f"  [{icon}] {t['content']}")
+    # `join` 用换行符把多行列表合成一个字符串，print 一次性显示完整任务面板。
     print("\n".join(lines))
+    # 返回给工具调度器的简短结果；它会作为 tool_result 反馈给模型，而不是替代上面的终端展示。
     return f"Updated {len(CURRENT_TODOS)} tasks"
 
 TOOLS = [
@@ -233,51 +257,79 @@ register_hook("Stop", summary_hook)
 # ═══════════════════════════════════════════════════════════
 
 def agent_loop(messages: list):
+    # 这个计数器只属于当前一次用户请求：它记录连续多少轮模型调用没有更新 todo 列表。
+    # 每次进入 agent_loop() 都从 0 开始，while 循环内部会持续维护它的状态。
     rounds_since_todo = 0
     while True:
         # s05: nag reminder — inject if model hasn't updated todos for 3 rounds
+        # 在发起下一次模型请求前检查是否连续 3 轮没有 todo 更新。
+        # `messages` 非空是为了确保提醒有上下文可附加；提醒本身使用 user 消息身份送回模型。
         if rounds_since_todo >= 3 and messages:
             messages.append({"role": "user",
                              "content": "<reminder>Update your todos.</reminder>"})
+            # 提醒已经注入，本轮重新计数；如果之后仍不更新，过 3 轮还会再次提醒。
             rounds_since_todo = 0
 
+        # 把当前完整消息历史、系统提示和工具定义发送给模型，等待它决定直接回答还是调用工具。
+        # 这是同步调用：程序会等待 API 返回，拿到 response 后才继续执行下一行。
         response = client.messages.create(
             model=MODEL, system=SYSTEM, messages=messages,
             tools=TOOLS, max_tokens=8000,
         )
+        # 先保存 assistant 的完整响应，尤其是其中的 text/tool_use block，
+        # 这样下一次 API 请求才能看到模型刚才做出的决定。
         messages.append({"role": "assistant", "content": response.content})
 
+        # 没有 tool_use 时，模型认为当前任务可以结束；但 Stop hook 仍有机会要求继续。
         if response.stop_reason != "tool_use":
+            # Stop hook 接收完整消息历史，可以打印总结，也可以返回一段“继续执行”的内容。
             force = trigger_hooks("Stop", messages)
             if force:
+                # `force` 非空表示 hook 强制继续：把它作为新的 user 消息加入上下文，回到 while 开头。
                 messages.append({"role": "user", "content": force})
                 continue
+            # Stop hook 没有要求继续，当前 agent_loop 正常结束。
             return
 
+        # 本轮至少发生了一次工具调用，因此算作一轮“模型采取行动”的迭代。
+        # 注意：这里每次 response 只加 1，即使 response.content 中包含多个 tool_use block。
         rounds_since_todo += 1
+        # 保存本轮所有工具调用的结果；循环结束后会一次性作为 user 消息回传给模型。
         results = []
         for block in response.content:
+            # response.content 还可能包含 text/thinking 等 block；只有 tool_use 才需要本地执行。
             if block.type != "tool_use":
                 continue
 
+            # PreToolUse hook 在真正调用 Python handler 前运行，可检查权限并返回拦截原因。
             blocked = trigger_hooks("PreToolUse", block)
             if blocked:
+                # 即使工具被拦截，也要为这个 tool_use_id 构造 tool_result，
+                # 让模型知道这次工具调用的结果是“被拒绝”，而不是让消息协议断裂。
                 results.append({"type": "tool_result", "tool_use_id": block.id,
                                 "content": str(blocked)})
+                # 跳过当前工具，继续处理同一个 response 中可能存在的其他 tool_use block。
                 continue
 
+            # 根据模型返回的工具名找到本地处理函数，再把 input 字典解包成关键字参数执行。
+            # 例如 name=todo_write、input={"todos": [...]} 会调用 run_todo_write(todos=[...])。
             handler = TOOL_HANDLERS.get(block.name)
             output = handler(**block.input) if handler else f"Unknown: {block.name}"
 
+            # 工具执行完成后触发 PostToolUse hook；它可以观察 output，例如检查输出是否过大。
             trigger_hooks("PostToolUse", block, output)
 
             # s05: reset nag counter when todo_write is called
+            # 只要模型成功调用 todo_write，就说明它重新提交了计划，连续未更新轮数归零。
             if block.name == "todo_write":
                 rounds_since_todo = 0
 
+            # 保存工具结果，并用同一个 tool_use_id 与 assistant 请求一一对应。
             results.append({"type": "tool_result", "tool_use_id": block.id,
                             "content": output})
 
+        # 将本轮所有 tool_result 作为 user 消息追加到历史，下一次 while 循环会把它们发回模型。
+        # 这样模型才能看到工具执行结果，并决定下一步继续调用工具还是给出最终回答。
         messages.append({"role": "user", "content": results})
 
 

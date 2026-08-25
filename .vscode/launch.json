@@ -2,10 +2,12 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: 当前文件（集成终端）",
+            "name": "Python: 当前文件（项目 .venv，集成终端）",
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "justMyCode": true
         }
