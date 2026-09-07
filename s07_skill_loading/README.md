@@ -3,6 +3,7 @@
 [中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → s05 → s06 → `s07` → [s08](../s08_context_compact/) → s09 → ... → s20
+
 > *"用到时再加载, 别全塞 prompt 里"* — 通过 tool_result 注入, 不塞 system prompt。
 >
 > **Harness 层**: 知识 — 按需加载, 不堆满上下文。
@@ -34,10 +35,10 @@ SYSTEM = (
 
 两层设计：
 
-| 层 | 位置 | 时机 | 代价 |
-|---|------|------|------|
-| 1. 目录 | system prompt | 启动时注入（harness 扫描 skills/） | ~100 tokens/skill，每轮都带 |
-| 2. 内容 | tool_result | Agent 调用 load_skill 时；SKILL.md 可指引后续的 read_file/bash 调用，用于按需访问额外资源 | ~2000 tokens/skill，按需 |
+| 层      | 位置          | 时机                                                                                      | 代价                        |
+| ------- | ------------- | ----------------------------------------------------------------------------------------- | --------------------------- |
+| 1. 目录 | system prompt | 启动时注入（harness 扫描 skills/）                                                        | ~100 tokens/skill，每轮都带 |
+| 2. 内容 | tool_result   | Agent 调用 load_skill 时；SKILL.md 可指引后续的 read_file/bash 调用，用于按需访问额外资源 | ~2000 tokens/skill，按需    |
 
 dispatch 机制不变，load_skill 通过 `TOOL_HANDLERS[block.name]` 分发。
 
@@ -106,13 +107,13 @@ def load_skill(name: str) -> str:
 
 ## 相对 s06 的变更
 
-| 组件 | 之前 (s06) | 之后 (s07) |
-|------|-----------|-----------|
-| 工具数量 | 7 (bash, read, write, edit, glob, todo_write, task) | 8 (+load_skill) |
-| 知识加载 | 无 | 两级：启动时目录注入 SYSTEM + 运行时 load_skill；SKILL.md 可指引后续资源访问 |
-| SYSTEM 提示 | 静态字符串 | 启动时扫描 skills/ 注入目录 |
-| 技能注册表 | 无 | SKILL_REGISTRY（启动时填充，防路径遍历） |
-| 循环 | 不变 | 不变（skill 工具自动分发） |
+| 组件        | 之前 (s06)                                          | 之后 (s07)                                                                   |
+| ----------- | --------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 工具数量    | 7 (bash, read, write, edit, glob, todo_write, task) | 8 (+load_skill)                                                              |
+| 知识加载    | 无                                                  | 两级：启动时目录注入 SYSTEM + 运行时 load_skill；SKILL.md 可指引后续资源访问 |
+| SYSTEM 提示 | 静态字符串                                          | 启动时扫描 skills/ 注入目录                                                  |
+| 技能注册表  | 无                                                  | SKILL_REGISTRY（启动时填充，防路径遍历）                                     |
+| 循环        | 不变                                                | 不变（skill 工具自动分发）                                                   |
 
 ---
 
@@ -152,16 +153,16 @@ s08 Context Compact → 四层压缩策略。便宜的先跑，贵的后跑。
 
 CC 的 SKILL.md YAML frontmatter 由 `parseSkillFrontmatterFields()` 解析（`loadSkillsDir.ts`），常见字段包括：
 
-| 字段 | 用途 |
-|------|------|
-| `name` / `description` | 显示名称和描述 |
-| `when_to_use` | 指导模型何时调用 |
-| `allowed-tools` | 技能可用工具的自动允许列表 |
-| `context` | `inline`（默认）或 `fork`（作为子 Agent 运行） |
-| `model` | 模型覆盖（haiku/sonnet/opus/inherit） |
-| `hooks` | 技能级别的 hook 配置 |
-| `paths` | 条件激活的 glob 模式 |
-| `user-invocable` | 用户可以通过 `/name` 调用 |
+| 字段                       | 用途                                               |
+| -------------------------- | -------------------------------------------------- |
+| `name` / `description` | 显示名称和描述                                     |
+| `when_to_use`            | 指导模型何时调用                                   |
+| `allowed-tools`          | 技能可用工具的自动允许列表                         |
+| `context`                | `inline`（默认）或 `fork`（作为子 Agent 运行） |
+| `model`                  | 模型覆盖（haiku/sonnet/opus/inherit）              |
+| `hooks`                  | 技能级别的 hook 配置                               |
+| `paths`                  | 条件激活的 glob 模式                               |
+| `user-invocable`         | 用户可以通过`/name` 调用                         |
 
 完整字段列表随版本迭代会变化，以上仅列出教学版涉及的核心字段。
 

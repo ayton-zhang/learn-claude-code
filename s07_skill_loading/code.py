@@ -49,46 +49,117 @@ client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 MODEL = os.environ["MODEL_ID"]
 CURRENT_TODOS: list[dict] = []
 
+# ==========================================
+# 机制总览：渐进式技能加载（Progressive Skill Loading）
+# ==========================================
+# 痛点与设计决策：
+#   若将所有 Skill 的完整说明（数十甚至上百页文档）一股脑塞入 SYSTEM 提示词，
+#   会导致上下文窗口迅速被撑爆（Context Explosion）、API 费用剧增，且大模型的注意力被严重稀释。
+# 解决方案：
+#   采用类似操作系统的"分页/按需加载"策略——
+#   1. 启动阶段：仅扫描技能目录，提取"技能名称 + 一句话简介"，拼成轻量级目录塞进 SYSTEM 提示词（仅几十个 token）。
+#   2. 执行阶段：模型自主判断需要某项技能时，主动调用 `load_skill` 工具，才将完整指令正文按需拉取到上下文中。
+
+
+# ==========================================
+# 组件 1：YAML Frontmatter 元数据解析器
+# ==========================================
+# 职责：解析 SKILL.md 文件顶部的 YAML 头信息，分离元数据与正文。
+# 格式约定：文件以三横线 `---` 开头，包裹 YAML 格式的元数据（如 name, description），第二道横线之后为详细的 Markdown 正文。
 # s07: Skill catalog scan (used by build_system below)
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
     """Parse YAML frontmatter from SKILL.md. Returns (meta, body)."""
+    # 快速检查：如果文本不是以 `---` 开头，说明该文件根本没有 Frontmatter 头部，
+    # 此时直接返回空元数据字典 {}，并将全部文本原样作为正文返回。
     if not text.startswith("---"):
         return {}, text
+
+    # 语法：`text.split("---", 2)` 中的 2 表示 `maxsplit=2`（最多切分 2 次，分成 3 个片段）。
+    # 片段 0：第一个 `---` 之前的内容（通常是空字符串）；
+    # 片段 1：两道 `---` 之间的 YAML 配置文本；
+    # 片段 2：第二道 `---` 之后的全部正文。
+    # 关键设计：限制切分次数为 2，可以防止正文中出现的 Markdown 水平分割线（也是 `---`）被误切碎。
     parts = text.split("---", 2)
+
+    # 如果切分出的片段少于 3 个，说明 `---` 没有成对闭合，格式非法，降级返回原文
     if len(parts) < 3:
         return {}, text
+
+    # 安全解析 YAML：使用 yaml.safe_load 避免任意代码执行漏洞；
+    # `or {}` 是防御性编程，防止 YAML 块全为空白时 safe_load 返回 None
     try:
         meta = yaml.safe_load(parts[1]) or {}
     except yaml.YAMLError:
+        # 若用户手写的 YAML 有语法错误，静默捕获并回退为空字典，防止单个坏文件搞垮整个 Agent 启动
         meta = {}
+
+    # 返回值：元组 (元数据字典, 清洗首尾空白后的正文内容)
     return meta, parts[2].strip()
 
+
+# ==========================================
+# 组件 2：全局技能注册表与扫描加载
+# ==========================================
+# 作用：充当内存中的 Skill 缓存库与白名单中心。
+# 数据结构：键为 skill_name（字符串），值为包含 {name, description, content} 的字典。
+# 设计意图：
+#   1. 避免每次调用 load_skill 频繁读取磁盘和反复解析；
+#   2. 提供安全的技能名白名单查表，杜绝模型传入恶意路径导致目录遍历攻击（Directory Traversal）。
 # Build skill registry at startup (used for safe lookup in load_skill)
 SKILL_REGISTRY: dict[str, dict] = {}
 
 def _scan_skills():
     """Scan skills/ dir, populate SKILL_REGISTRY with name/description/content."""
+    # 容错防线：若工作区没有 skills 目录，直接静默退出，保证无技能环境下 Agent 也能正常工作
     if not SKILLS_DIR.exists():
         return
+
+    # 遍历 skills/ 目录下的所有子目录：
+    # 语法：sorted() 确保在不同操作系统（Linux/macOS）上遍历顺序严格一致，避免提示词因哈希顺序不稳定而频繁变动
     for d in sorted(SKILLS_DIR.iterdir()):
+        # 每个技能都是一个独立目录（如 skills/code-review/），跳过普通文件
         if not d.is_dir():
             continue
+
         manifest = d / "SKILL.md"
         if manifest.exists():
             raw = manifest.read_text()
+            # 语法：元组解包，同时拿到解析后的元数据字典与正文
             meta, body = _parse_frontmatter(raw)
+
+            # 字段降级兜底逻辑（Fallback）：
+            # 1. name: 优先取 YAML 中的 name，若未定义则降级使用文件夹名 `d.name`
             name = meta.get("name", d.name)
+            # 2. description: 优先取 YAML 的 description，若未定义则提取正文第一行（去除 Markdown # 标题符）作为简介
             desc = meta.get("description", raw.split("\n")[0].lstrip("#").strip())
+
+            # 注册入库：保存 name, description 以及原始完整文本 raw（供后续 load_skill 随时按需调取）
             SKILL_REGISTRY[name] = {"name": name, "description": desc, "content": raw}
 
+# 模块加载时执行一次性扫描，完成注册表初始化
 _scan_skills()
 
+
+# ==========================================
+# 组件 3：技能目录格式化
+# ==========================================
+# 职责：把内存中的技能字典转化为供 LLM 阅读的紧凑 Markdown 清单
 def list_skills() -> str:
     """List all skills (name + one-line description)."""
     if not SKILL_REGISTRY:
         return "(no skills found)"
+
+    # 语法：生成器表达式结合 `"\n".join(...)`，高效拼接列表项。
+    # 输出格式类似：
+    #   - **code-review**: Analyze code changes and suggest improvements
+    #   - **pytest**: Run unit tests and generate reports
     return "\n".join(f"- **{s['name']}**: {s['description']}" for s in SKILL_REGISTRY.values())
 
+
+# ==========================================
+# 组件 4：系统提示词（SYSTEM Prompt）装配
+# ==========================================
+# 职责：在启动时将轻量级技能目录注入 Agent 的系统提示词中
 # s07: SYSTEM includes skill catalog (cheap — just names + descriptions)
 def build_system() -> str:
     """Build SYSTEM prompt with skill catalog injected at startup."""
@@ -99,6 +170,7 @@ def build_system() -> str:
         "Use load_skill to get full details when needed."
     )
 
+# 在全局构建并固化 SYSTEM 提示词，使模型在开始对话前就清晰知晓自己具备哪些扩展技能
 SYSTEM = build_system()
 
 # s07: subagent gets its own system prompt — no skill loading, no task
@@ -410,7 +482,8 @@ if __name__ == "__main__":
     history = []
     while True:
         try:
-            query = input("\033[36ms07 >> \033[0m")
+            default_query = "I need to do a code review -- load the relevant skill first"
+            query = input(f"\033[36ms07 >> {default_query} \033[0m") or default_query
         except (EOFError, KeyboardInterrupt):
             break
         if query.strip().lower() in ("q", "exit", ""):
