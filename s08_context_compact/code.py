@@ -302,7 +302,8 @@ PERSIST_THRESHOLD = 30000
 # 因此它不是单纯累加正文长度，也不是实际 API 请求的字节数或精确 token 数。
 # 此函数没有统计单独传入 API 的 SYSTEM、TOOLS，也不会修改 msgs；估算不足时由应急路径兜底。
 # 语法：冒号后直接写 return 是单行函数体，与换行缩进的写法作用相同。
-def estimate_size(msgs): return len(str(msgs))
+def estimate_size(msgs):
+    return len(str(msgs))
 
 
 # ==========================================
@@ -834,7 +835,7 @@ if __name__ == "__main__":
     history = []
     while True:
         try:
-            default_query = "Read the file README.md, then read code.py, then read s01_agent_loop/README.md"
+            default_query = "​Read every file in s08_context_compact/"
             query = input(f"\033[36ms08 >> {default_query} \033[0m") or default_query
         except (EOFError, KeyboardInterrupt):
             break
