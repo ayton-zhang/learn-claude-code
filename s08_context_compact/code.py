@@ -279,19 +279,26 @@ def spawn_subagent(description: str) -> str:
 # 最后用 estimate_size 判断是否需要 L4。前三步不发起额外模型请求，但仍有计算或磁盘开销。
 # 这里压缩的是 messages 中的会话记录，不是模型权重，也不是模型内部的 KV Cache。
 
-# --- 阈值与超参数设定 ---
-# CONTEXT_LIMIT: 上下文字符数上限阈值，超过该阈值时自动触发 L4 的 LLM 总结压缩
-# 这是本程序主动压缩的触发线，不是服务端模型的真实上下文窗口。
-# 主循环在前三层处理后用 > 比较：估算值恰好等于 50000 时不会因此触发 L4。
-CONTEXT_LIMIT = 50000
-# KEEP_RECENT: L2 微缩时保护的最近工具结果块数量，防止刚拿到的结果被过早擦除
-# “最近”按历史中的结果块顺序计算；同一次模型回复请求多个工具时，可能产生多个结果块。
-# 这是正整数保留数量，与保留多少条消息、多少轮问答不是同一回事。
-KEEP_RECENT = 3
-# PERSIST_THRESHOLD: 单个工具输出进入持久化处理的字符数阈值，不是所有输出的强制长度上限
-# 该阈值由持久化函数和 L3 预算循环使用；等于阈值时仍保留原文。
-# 在当前主循环里，只有最新一条消息的工具结果总量先超预算，才会尝试逐个大块落盘。
-PERSIST_THRESHOLD = 30000
+# --- 教学调试档：把触发线调低，方便逐层观察压缩流程 ---
+# 这些值是本示例的演示参数，不代表生产环境的上下文限制。
+# 当前 query 读取 s08_context_compact/ 中的多个文件时，结果会超过这些教学阈值；
+# 当模型产生多个工具回合时，可以依次观察 L3 → L1 → L2 → L4。
+# 调试时可以在这些常量上打断点，观察每一层压缩前后的 messages 变化。
+
+# CONTEXT_LIMIT: L4 的主动摘要触发线（按字符数近似，不是模型真实 token 上限）。
+# 设为 1500，是为了让 L3 落盘、L1 裁剪、L2 占位之后仍能进入 L4。
+CONTEXT_LIMIT = 1500
+
+# KEEP_RECENT: L2 只保护最近 1 个 tool_result，其余较早结果可被替换成占位符。
+# 同一次模型回复中的多个工具结果也会分别计数，因此“读多个文件”很容易触发。
+KEEP_RECENT = 1
+
+# PERSIST_THRESHOLD: 单个 tool_result 超过 500 个字符就允许 L3 外置到磁盘。
+# s08 目录中的 README/code 文件远超这个大小，当前 query 可以稳定触发落盘。
+PERSIST_THRESHOLD = 500
+
+# L2 的正文脱水阈值；单独命名便于学习时打断点或临时调整。
+MICRO_COMPACT_THRESHOLD = 40
 
 # ==========================================
 # 大小估算：用消息的字符串表示决定是否升级到语义摘要
@@ -381,11 +388,11 @@ def _is_tool_result_message(msg):
 # 职责：当消息总条数超过 max_messages 时，按位置切掉中间历史，
 #       同时保留首部与尾部，并对相邻 tool_use/tool_result 做边界保护。
 # L1: snipCompact — trim middle messages
-# 参数：messages 是按时间排列的消息列表，每条含 role 与 content；max_messages 默认 50。
-# 这里数的是“消息条数”，一次问答或一轮工具调用可能占多条消息，不是 50 轮对话。
+# 参数：messages 是按时间排列的消息列表，每条含 role 与 content；max_messages 默认 6。
+# 这里数的是“消息条数”，一次问答或一轮工具调用可能占多条消息，不是 6 轮对话。
 # 默认值大于固定保留的头部 3 条；函数没有校验自定义阈值，不能把任意小值当作可靠配置。
 # 这层按位置取舍，不判断内容是否真的过时；调用方用返回列表替换当前历史。
-def snip_compact(messages, max_messages=50):
+def snip_compact(messages, max_messages=1):
     # 消息数量未超标时直接原样返回，不做任何操作
     if len(messages) <= max_messages: return messages
 
@@ -464,7 +471,7 @@ def collect_tool_results(messages):
 # 最近 KEEP_RECENT 个指“工具结果块”，多个块可能属于同一条 user 消息。
 def micro_compact(messages):
     tool_results = collect_tool_results(messages)
-    # 如果工具结果总数未达到保留阈值（KEEP_RECENT=3），则无需精简
+    # 如果工具结果总数未超过保留阈值（KEEP_RECENT=1），则无需精简
     if len(tool_results) <= KEEP_RECENT: return messages
 
     # 语法：`tool_results[:-KEEP_RECENT]` 切片取出除最后 KEEP_RECENT 个之外的所有较早工具结果，
@@ -472,10 +479,10 @@ def micro_compact(messages):
     # 两个 _ 都表示“这两个索引不用”；它仍是普通变量，不会参与后续逻辑。
     # 这里依赖 KEEP_RECENT 为正数；Python 的 -0 等于 0，不能用该切片表达“保留零个”。
     for _, _, block in tool_results[:-KEEP_RECENT]:
-        # 仅对超过 120 字符的长文本进行脱水，本身就很短的执行结果（如 "OK"、"Edited file"）保留原样
+        # 仅对超过 MICRO_COMPACT_THRESHOLD 的文本进行脱水；短结果（如 "OK"）保留原样
         # 主循环把工具输出转成字符串存入 content，因此这里 len 按字符计算。
         # get 的空串默认值用于缺少 content 键的情况，并不负责转换已有的其他类型。
-        if len(block.get("content", "")) > 120:
+        if len(block.get("content", "")) > MICRO_COMPACT_THRESHOLD:
             # 只改正文，保留 type 和 tool_use_id，让“调用—返回”的关系仍可识别。
             # 占位符只是提示需要时重新执行；这一步本身不会备份原文或自动重跑工具。
             block["content"] = "[Earlier tool result compacted. Re-run if needed.]"
@@ -511,11 +518,11 @@ def persist_large_output(tool_use_id, output):
 # ==========================================
 # 单轮预算：按体积从大到小外置最新工具输出
 # ==========================================
-# 参数：messages 是当前历史；max_bytes 默认 200_000（下划线只是数字分隔符）。
+# 参数：messages 是当前历史；max_bytes 默认 1_500（下划线只是数字分隔符）。
 # 注意：虽然参数和原有文档称“字节”，实现实际用 len(str(...)) 计算字符数，
 # 没有编码为字节，也没有分词；预算仅覆盖最后一条消息里的工具结果正文。
 # 返回同一 messages 列表，内部结果块的正文可能已被原地替换。
-def tool_result_budget(messages, max_bytes=200_000):
+def tool_result_budget(messages, max_bytes=1_500):
     """对最新一轮的工具返回做总字节预算控制，超标时优先持久化体积最大的块。"""
     # 语法：三元表达式获取最新一条消息；通常工具结果就在最后一条 user 消息中
     last = messages[-1] if messages else None
@@ -835,7 +842,7 @@ if __name__ == "__main__":
     history = []
     while True:
         try:
-            default_query = "​Read every file in s08_context_compact/"
+            default_query = "​Read every file in s08_context_compact/, but call only one read_file tool per turn."
             query = input(f"\033[36ms08 >> {default_query} \033[0m") or default_query
         except (EOFError, KeyboardInterrupt):
             break
