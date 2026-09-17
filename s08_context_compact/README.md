@@ -3,6 +3,7 @@
 [中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → s05 → s06 → s07 → `s08` → [s09](../s09_memory/) → s10 → ... → s20
+
 > *"上下文总会满, 要有办法腾地方"* — 四层压缩策略, 便宜的先跑贵的后跑。
 >
 > **Harness 层**: 压缩 — 干净的记忆, 无限的会话。
@@ -193,13 +194,13 @@ def agent_loop(messages):
 
 ## 相对 s07 的变更
 
-| 组件 | 之前 (s07) | 之后 (s08) |
-|------|-----------|-----------|
-| 上下文管理 | 无（上下文无限膨胀） | 四层压缩管线 + 应急 |
-| 新函数 | — | snip_compact, micro_compact, tool_result_budget, compact_history, reactive_compact |
-| 工具 | bash, read, write, edit, glob, todo_write, task, load_skill (8) | 8 + compact (9) |
-| 循环 | LLM 调用 → 工具执行 | 每轮前跑三层预处理器 + 阈值触发 compact_history |
-| 设计原则 | — | 便宜的先跑，贵的后跑 |
+| 组件       | 之前 (s07)                                                      | 之后 (s08)                                                                         |
+| ---------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 上下文管理 | 无（上下文无限膨胀）                                            | 四层压缩管线 + 应急                                                                |
+| 新函数     | —                                                              | snip_compact, micro_compact, tool_result_budget, compact_history, reactive_compact |
+| 工具       | bash, read, write, edit, glob, todo_write, task, load_skill (8) | 8 + compact (9)                                                                    |
+| 循环       | LLM 调用 → 工具执行                                            | 每轮前跑三层预处理器 + 阈值触发 compact_history                                    |
+| 设计原则   | —                                                              | 便宜的先跑，贵的后跑                                                               |
 
 ---
 
@@ -235,20 +236,20 @@ s09 Memory → 三个子系统：选择记什么、提取关键信息、整理�
 
 教学版为了讲解方便按 L1/L2/L3/L4 编号，但实际执行顺序和编号不完全对应：
 
-| 维度 | 教学版 | Claude Code |
-|------|--------|-------------|
-| 执行顺序 | budget → snip → micro → auto | budget → snip → micro → collapse → auto（`query.ts:379-468`） |
-| snip_compact | 保留头 3 + 尾 47 | CC 仅主线程启用；实现不在开源仓库中（`HISTORY_SNIP` feature gate），但接口可见：`snipCompactIfNeeded(messages)` → `{ messages, tokensFreed, boundaryMessage? }`，还暴露了 `SnipTool` 工具让模型主动调用。教学版的 3/47 是简化参数 |
-| micro_compact | 文本占位符替换 | 两条路径：time-based 直接清内容，cached 走 API `cache_edits`（legacy path 已移除） |
-| micro_compact 白名单 | 按位置（最近 3 条） | time-based 按时间阈值触发；cached 按计数触发（`microCompact.ts`） |
-| tool_result_budget | 200KB 字符 | 200,000 字符（`toolLimits.ts:49`） |
-| compact_history 阈值 | 字符数估算 | 精确 token：`contextWindow - maxOutputTokens - 13_000` |
-| 摘要要求 | 5 类信息 | 9 个部分 + `<analysis>`/`<summary>` 双标签 |
-| 压缩 prompt | 简单 prompt | 首尾双重防呆禁止调工具 |
-| PTL retry | 有（简化） | `truncateHeadForPTLRetry()` 按消息组回退（`compact.ts:243-290`） |
-| 后压缩恢复 | 无（教学版只保留摘要） | 自动重新读取最近文件、计划、agent/skill/tool 等 |
-| 熔断器 | 3 次 | 3 次（`autoCompact.ts:70`） |
-| reactive 重试 | 1 次 | CC 有更精细的分级重试 |
+| 维度                 | 教学版                          | Claude Code                                                                                                                                                                                                                                |
+| -------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 执行顺序             | budget → snip → micro → auto | budget → snip → micro → collapse → auto（`query.ts:379-468`）                                                                                                                                                                        |
+| snip_compact         | 保留头 3 + 尾 47                | CC 仅主线程启用；实现不在开源仓库中（`HISTORY_SNIP` feature gate），但接口可见：`snipCompactIfNeeded(messages)` → `{ messages, tokensFreed, boundaryMessage? }`，还暴露了 `SnipTool` 工具让模型主动调用。教学版的 3/47 是简化参数 |
+| micro_compact        | 文本占位符替换                  | 两条路径：time-based 直接清内容，cached 走 API`cache_edits`（legacy path 已移除）                                                                                                                                                        |
+| micro_compact 白名单 | 按位置（最近 3 条）             | time-based 按时间阈值触发；cached 按计数触发（`microCompact.ts`）                                                                                                                                                                        |
+| tool_result_budget   | 200KB 字符                      | 200,000 字符（`toolLimits.ts:49`）                                                                                                                                                                                                       |
+| compact_history 阈值 | 字符数估算                      | 精确 token：`contextWindow - maxOutputTokens - 13_000`                                                                                                                                                                                   |
+| 摘要要求             | 5 类信息                        | 9 个部分 +`<analysis>`/`<summary>` 双标签                                                                                                                                                                                              |
+| 压缩 prompt          | 简单 prompt                     | 首尾双重防呆禁止调工具                                                                                                                                                                                                                     |
+| PTL retry            | 有（简化）                      | `truncateHeadForPTLRetry()` 按消息组回退（`compact.ts:243-290`）                                                                                                                                                                       |
+| 后压缩恢复           | 无（教学版只保留摘要）          | 自动重新读取最近文件、计划、agent/skill/tool 等                                                                                                                                                                                            |
+| 熔断器               | 3 次                            | 3 次（`autoCompact.ts:70`）                                                                                                                                                                                                              |
+| reactive 重试        | 1 次                            | CC 有更精细的分级重试                                                                                                                                                                                                                      |
 
 ### 执行顺序详解
 
@@ -270,16 +271,16 @@ Claude Code 没有用教学版这种简单规则解决这个问题。它把 `Rea
 
 ### 完整常量参考
 
-| 常量 | 值 | 源文件 |
-|------|-----|--------|
-| `AUTOCOMPACT_BUFFER_TOKENS` | 13,000 | `autoCompact.ts:62` |
-| `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES` | 3 | `autoCompact.ts:70` |
-| `MAX_OUTPUT_TOKENS_FOR_SUMMARY` | 20,000 | `autoCompact.ts:30` |
-| `POST_COMPACT_TOKEN_BUDGET` | 50,000 | `compact.ts:123` |
-| `POST_COMPACT_MAX_FILES_TO_RESTORE` | 5 | `compact.ts:122` |
-| `POST_COMPACT_MAX_TOKENS_PER_FILE` | 5,000 | `compact.ts:124` |
-| 时间 micro_compact 间隔 | 60 分钟 | `timeBasedMCConfig.ts` |
-| `MAX_COMPACT_STREAMING_RETRIES` | 2 | `compact.ts:131` |
+| 常量                                     | 值      | 源文件                   |
+| ---------------------------------------- | ------- | ------------------------ |
+| `AUTOCOMPACT_BUFFER_TOKENS`            | 13,000  | `autoCompact.ts:62`    |
+| `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES` | 3       | `autoCompact.ts:70`    |
+| `MAX_OUTPUT_TOKENS_FOR_SUMMARY`        | 20,000  | `autoCompact.ts:30`    |
+| `POST_COMPACT_TOKEN_BUDGET`            | 50,000  | `compact.ts:123`       |
+| `POST_COMPACT_MAX_FILES_TO_RESTORE`    | 5       | `compact.ts:122`       |
+| `POST_COMPACT_MAX_TOKENS_PER_FILE`     | 5,000   | `compact.ts:124`       |
+| 时间 micro_compact 间隔                  | 60 分钟 | `timeBasedMCConfig.ts` |
+| `MAX_COMPACT_STREAMING_RETRIES`        | 2       | `compact.ts:131`       |
 
 ### contextCollapse 和 sessionMemoryCompact
 
